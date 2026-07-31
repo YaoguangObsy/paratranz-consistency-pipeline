@@ -1,6 +1,4 @@
-一个基于术语表的翻译一致性校对工作台。
-
-_仍在调试中的个人工具 Built with Claude_
+仍在调试中的个人工具 Built with Claude
 
 ### 工作流：
 
