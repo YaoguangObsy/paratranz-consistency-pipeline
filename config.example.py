@@ -1,0 +1,4 @@
+# config.example.py
+
+PARATRANZ_TOKEN = "YOUR_PARATRANZ_TOKEN"
+PROJECT_ID = 1234

@@ -1,0 +1,9 @@
+/config.py
+/Log.md
+/data/
+/reports/
+/.venv/
+/webapp/scripts_patch/
+.idea/
+/push_receipt.csv
+/review_decisions.csv

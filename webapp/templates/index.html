@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<title>工作台</title>
+<link rel="stylesheet" href="https://unpkg.com/tabulator-tables@5.5.2/dist/css/tabulator.min.css">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<header>
+  <h1>工作台</h1>
+  <nav>
+    <button class="tab-btn active" data-tab="decisions">决策表</button>
+    <button class="tab-btn" data-tab="fetch">拉取数据</button>
+    <button class="tab-btn" data-tab="push">推送 & 日志</button>
+    <button class="tab-btn" data-tab="config">配置</button>
+  </nav>
+  <span id="statusBar"></span>
+</header>
+
+<!-- ===================== CONFIG ===================== -->
+<section id="tab-config" class="tab-panel">
+  <h2>Paratranz 配置</h2>
+  <div class="form-row">
+    <label>Token</label>
+    <input id="cfgToken" type="password" placeholder="留空则保留当前已保存的 token">
+  </div>
+  <div class="form-row">
+    <label>Project ID</label>
+    <input id="cfgProjectId" type="number">
+  </div>
+  <button id="cfgSaveBtn">保存配置</button>
+  <p id="cfgStatus" class="hint"></p>
+</section>
+
+<!-- ===================== FETCH ===================== -->
+<section id="tab-fetch" class="tab-panel hidden">
+  <h2>一键拉取</h2>
+  <div class="card">
+    <h3>隐藏词条 key</h3>
+    <p class="hint">写入 data/excluded_keys.txt，供 2_check_consistency.py 的 --exclude-keys 使用</p>
+    <label>stage <input id="hiddenStage" type="number" value="-1" style="width:60px"></label>
+    <button id="fetchHiddenBtn">拉取隐藏 key</button>
+    <span id="fetchHiddenResult" class="hint"></span>
+  </div>
+  <div class="card">
+    <h3>术语表</h3>
+    <p class="hint">写入 data/paratranz_terms.csv</p>
+    <button id="fetchTermsBtn">拉取术语表</button>
+    <span id="fetchTermsResult" class="hint"></span>
+  </div>
+  <div class="card">
+    <h3>原文 + 现译文合并包（Merged.csv）</h3>
+    <p class="hint">调用 Paratranz 导出接口打包全部文本文件，解压后按 key 合并成
+      data/Merged.csv（未汉化取原文、已汉化取译文，规则同旧的 C# 合并工具）。
+      通常还需要单独放一份纯原文 CSV 到 data/Original_En.csv 作为一致性检查的基准。</p>
+    <button id="fetchArtifactsBtn">拉取并合并</button>
+    <span id="fetchArtifactsResult" class="hint"></span>
+  </div>
+  <div class="card">
+    <h3>重新生成一致性报告 + 决策表</h3>
+    <p class="hint">相当于依次跑 2_check_consistency.py 和 3_build_review_sheet.py。
+      已有的 decision / final_translation / reviewer_note / 排除标记会按 key 带过来，不会被清空。</p>
+    <div class="form-row"><label>原文 CSV</label><input id="rgSource" value="data/Original_En.csv" style="width:280px"></div>
+    <div class="form-row"><label>译文 CSV</label><input id="rgTranslated" value="data/Merged.csv" style="width:280px"></div>
+    <div class="form-row"><label>术语表 CSV（可选）</label><input id="rgGlossary" value="data/paratranz_terms.csv" style="width:280px"></div>
+    <div class="form-row"><label>排除 key 列表（可选）</label><input id="rgExcludeKeys" value="data/excluded_keys.txt" style="width:280px"></div>
+    <button id="regenReportBtn">刷新报告 + 决策表</button>
+    <p id="regenReportResult" class="hint"></p>
+  </div>
+  <p class="hint">拉取后请照常运行 2_check_consistency.py / 3_build_review_sheet.py 生成/更新 review_decisions.csv，再回到「决策表」标签编辑（或直接用上面的按钮）。</p>
+</section>
+
+<!-- ===================== DECISIONS ===================== -->
+<section id="tab-decisions" class="tab-panel">
+  <div class="toolbar">
+    <input id="searchBox" placeholder="搜索 key / 原文 / 现译文 / 术语…" style="width:260px">
+    <select id="decisionFilter">
+      <option value="__all__">全部 decision</option>
+      <option value="">(空)</option>
+      <option value="accept">accept</option>
+      <option value="reject">reject</option>
+      <option value="edit">edit</option>
+    </select>
+    <label class="checkbox-inline"><input type="checkbox" id="showExcluded"> 显示已排除行</label>
+    <button id="reloadBtn">刷新</button>
+    <button id="findReplaceBtn">查找替换…</button>
+    <button id="undoBtn" class="warn" disabled>↩ 撤销上一步</button>
+    <span id="rowCount" class="hint"></span>
+    <span id="selCount" class="hint"></span>
+  </div>
+  <div class="toolbar">
+    <span class="toolbar-label">批量设置：</span>
+    <select id="bulkScope">
+      <option value="filtered">当前筛选结果</option>
+      <option value="selected">当前勾选行</option>
+    </select>
+    <button data-bulk-decision="accept">→ accept</button>
+    <button data-bulk-decision="reject">→ reject</button>
+    <button data-bulk-decision="edit">→ edit</button>
+    <button data-bulk-decision="">→ 清空</button>
+    <span class="toolbar-sep"></span>
+    <span class="toolbar-label">排除（不推送/灰显）：</span>
+    <button id="bulkExcludeBtn" class="warn">标记排除</button>
+    <button id="bulkUnexcludeBtn">取消排除</button>
+    <span class="toolbar-sep"></span>
+    <span class="toolbar-label">按术语精确排除：</span>
+    <input id="termExcludeInput" placeholder="完全匹配…" style="width:120px">
+    <button id="termExcludeBtn" class="warn">排除该术语全部行</button>
+    <button id="termUnexcludeBtn">取消排除该术语</button>
+  </div>
+  <div id="grid"></div>
+</section>
+
+<!-- ===================== PUSH ===================== -->
+<section id="tab-push" class="tab-panel hidden">
+  <h2>推送到 Paratranz</h2>
+  <p class="hint">只会推送 decision=accept 或 edit 的行。accept 用 suggested_translation，edit 用 final_translation。</p>
+  <button id="dryRunBtn">先演练 (dry-run)</button>
+  <button id="pushBtn" class="danger">确认提交（真实写入）</button>
+  <div id="pushSummary" class="hint"></div>
+  <div id="pushLogGrid"></div>
+</section>
+
+<!-- ===================== FIND/REPLACE MODAL ===================== -->
+<div id="frModal" class="modal hidden">
+  <div class="modal-box">
+    <h3>批量查找替换</h3>
+    <div class="form-row">
+      <label>字段</label>
+      <select id="frField">
+        <option value="final_translation">final_translation</option>
+        <option value="reviewer_note">reviewer_note</option>
+      </select>
+    </div>
+    <div class="form-row"><label>查找</label><input id="frFind"></div>
+    <div class="form-row"><label>替换为</label><input id="frReplace"></div>
+    <div class="form-row"><label><input type="checkbox" id="frRegex"> 正则表达式</label></div>
+    <div class="form-row">
+      <label>作用范围</label>
+      <select id="frScope">
+        <option value="all">全表</option>
+        <option value="filtered">当前筛选结果（搜索框 + decision 筛选）</option>
+        <option value="selected">当前勾选行</option>
+      </select>
+    </div>
+    <div class="form-row">
+      <label>仅限 decision =</label>
+      <select id="frOnlyDecision">
+        <option value="">不限</option>
+        <option value="accept">accept</option>
+        <option value="reject">reject</option>
+        <option value="edit">edit</option>
+      </select>
+    </div>
+    <p class="hint" id="frScopeHint"></p>
+    <button id="frPreviewBtn">预览匹配</button>
+    <button id="frApplyBtn" class="danger">确认替换</button>
+    <button id="frCloseBtn">关闭</button>
+    <div id="frResult"></div>
+  </div>
+</div>
+
+<script src="https://unpkg.com/tabulator-tables@5.5.2/dist/js/tabulator.min.js"></script>
+<script src="/static/app.js"></script>
+</body>
+</html>
