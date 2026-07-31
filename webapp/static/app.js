@@ -127,7 +127,7 @@ async function flushChanges() {
   }).then(r => r.json());
   setStatus(r.ok ? `已自动保存 ${r.updated} 行` : '保存失败', !r.ok);
 }
-window.addEventListener('beforeunload', () => { if (Object.row_ids(pendingChanges).length) flushChanges(); });
+window.addEventListener('beforeunload', () => { if (Object.keys(pendingChanges).length) flushChanges(); });
 
 async function loadDecisions() {
   const data = await fetch('/api/decisions').then(r => r.json());
@@ -284,7 +284,7 @@ function applyFilters() {
 document.querySelectorAll('[data-bulk-decision]').forEach(btn => {
   btn.addEventListener('click', async () => {
     const decision = btn.dataset.bulkDecision;
-    const row_ids = rowidsForScope();
+    const row_ids = rowIdsForScope();
     if (!row_ids.length) return;
     const label = decision || '(空)';
     if (!confirm(`将 ${row_ids.length} 行的 decision 设为「${label}」？`)) return;
@@ -346,8 +346,8 @@ $('#termUnexcludeBtn').addEventListener('click', () => excludeByTerm(false));
 // ------------------------------------------------------ find & replace ---
 function updateFrScopeHint() {
   const scope = $('#frScope').value;
-  if (scope === 'selected') $('#frScopeHint').textContent = `将只作用于当前勾选的 ${getSelectedKeys().length} 行`;
-  else if (scope === 'filtered') $('#frScopeHint').textContent = `将只作用于当前筛选出的 ${getFilteredKeys().length} 行`;
+  if (scope === 'selected') $('#frScopeHint').textContent = `将只作用于当前勾选的 ${getSelectedRowIds().length} 行`;
+  else if (scope === 'filtered') $('#frScopeHint').textContent = `将只作用于当前筛选出的 ${getFilteredRowIds().length} 行`;
   else $('#frScopeHint').textContent = '将作用于全表所有行';
 }
 $('#frScope').addEventListener('change', updateFrScopeHint);
@@ -359,13 +359,13 @@ $('#frCloseBtn').addEventListener('click', () => $('#frModal').classList.add('hi
 
 async function runFindReplace(dryRun) {
   const scope = $('#frScope').value;
-  let keys = null;
+  let row_ids = null;
   if (scope === 'selected') {
-    keys = getSelectedKeys();
-    if (!keys.length) { $('#frResult').textContent = '没有勾选任何行。'; return; }
+    row_ids = getSelectedRowIds();
+    if (!row_ids.length) { $('#frResult').textContent = '没有勾选任何行。'; return; }
   } else if (scope === 'filtered') {
-    keys = getFilteredKeys();
-    if (!keys.length) { $('#frResult').textContent = '当前筛选结果为空。'; return; }
+    row_ids = getFilteredRowIds();
+    if (!row_ids.length) { $('#frResult').textContent = '当前筛选结果为空。'; return; }
   }
   const body = {
     field: $('#frField').value,
@@ -373,13 +373,13 @@ async function runFindReplace(dryRun) {
     replace: $('#frReplace').value,
     use_regex: $('#frRegex').checked,
     only_decision: $('#frOnlyDecision').value,
-    keys: keys,
+    row_ids: row_ids,
     dry_run: dryRun,
   };
   const r = await fetch('/api/decisions/find-replace', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(r => r.json());
   if (!r.ok) { $('#frResult').textContent = '错误: ' + r.error; return; }
   let html = `<p>匹配 ${r.match_count} 行${r.applied ? '，已应用' : '（预览，未写入）'}</p>`;
-  html += '<ul>' + r.preview.map(m => `<li><b>${m.key}</b>: "${m.before}" → "${m.after}"</li>`).join('') + '</ul>';
+  html += '<ul>' + r.preview.map(m => `<li><b>${m.row_id}</b>: "${m.before}" → "${m.after}"</li>`).join('') + '</ul>';
   $('#frResult').innerHTML = html;
   if (r.applied) {
     if (r.preview.length) {
