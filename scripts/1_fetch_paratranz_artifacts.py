@@ -5,37 +5,25 @@
 2_check_consistency.py 的 --translated 参数使用。
 
 对应 Paratranz Artifacts API（见 https://paratranz.cn/api-docs）：
-    GET  /projects/{id}/artifacts/download    直接下载最近一次打包好的 zip
-    GET  /projects/{id}/artifacts             查询最近一次打包的信息（不是任务状态！
-                                               返回的是 total/translated/hidden/size/
+    GET  /projects/{id}/artifacts/download    302 重定向到 OSS 上最近一次打包好的 zip
+    GET  /projects/{id}/artifacts             查询最近一次打包的信息（total/translated/
                                                createdAt 等统计字段，没有 status）
     POST /projects/{id}/artifacts             手动触发重新打包——仅项目管理员可用，
                                                普通成员会收到 403
 
-Paratranz 后台每小时会自动重新打包一次，所以正常情况下不需要（也没权限）手动
-触发，直接下载最新的自动打包结果就行；脚本默认就是这么做的，只是顺便把这份包
-的 createdAt/total/translated 等信息打印出来，方便你自己判断新不新鲜。
-如果你本来就是项目管理员、想强制刷新成最新状态再下载，加 --trigger：
-脚本会先记下触发前的 createdAt 作为基准，POST 触发后轮询 GET /artifacts，
-靠 createdAt 是否变成更新的时间来判断新包是否打包完成（这个接口没有明确的
-"进行中/已完成"状态字段，只能用时间戳变化间接判断）。
+Paratranz 每小时自动打包一次，默认直接下载最新的自动打包结果（普通成员即可）。
+项目管理员想强制刷新时加 --trigger：先记下触发前的 createdAt，POST 触发后轮询
+GET /artifacts，靠 createdAt 变化判断新包是否完成。
 
-合并规则沿用旧逻辑
-项目的 key 就是普通字符串，不做这个变换，只做首尾空白清理：
+合并规则：
     - 每个 csv 文件里，每一行第一列是 key，最后一列是文本
-        2 列   -> 未汉化，第二列(=最后一列)是原文
-        3+ 列  -> 已汉化（或原文本身含未转义逗号），最后一列是译文
-    - 同一个 key 在多个文件/多行出现：优先保留"已汉化"的那条；
-      若汉化状态相同，按文件名排序后处理，后处理的覆盖前面的
-    - 用 Python csv 模块解析（自动正确处理引号内的逗号/换行），
-      不需要像 C# 那样手写状态机
+        2 列   -> 未汉化，第二列是原文
+        3+ 列  -> 已汉化，最后一列是译文
+    - 同一个 key 多次出现：优先保留"已汉化"的；状态相同则按文件名排序后靠后的覆盖
 
 用法:
-    # 直接下载最新的自动打包结果并合并（推荐，普通成员就能用）
     python scripts/1_fetch_paratranz_artifacts.py --out data/Merged.csv
-    # 项目管理员：先强制触发一次新打包，等它完成后再下载合并
     python scripts/1_fetch_paratranz_artifacts.py --out data/Merged.csv --trigger
-    # 只想看合并结果、不想联网（比如已经手动下载过 zip）：
     python scripts/1_fetch_paratranz_artifacts.py --from-zip 下载好的.zip --out data/Merged.csv
 """
 import argparse
@@ -49,6 +37,7 @@ import urllib.error
 import urllib.request
 import zipfile
 from pathlib import Path
+from urllib.parse import urljoin
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -56,6 +45,7 @@ sys.path.insert(0, str(ROOT))
 from config import PARATRANZ_TOKEN, PROJECT_ID
 
 API_BASE = 'https://paratranz.cn/api'
+SITE_BASE = 'https://paratranz.cn'
 
 
 def api_request(method, url, token, timeout=60):
@@ -65,12 +55,7 @@ def api_request(method, url, token, timeout=60):
 
 
 def get_artifact_info(project_id, token):
-    """GET /projects/{id}/artifacts —— 注意这个不是任务状态查询接口，返回的是
-    最近一次打包结果的统计信息，形如：
-        {'id': ..., 'createdAt': '2026-07-30T09:36:30.094Z', 'project': ...,
-         'total': 104054, 'translated': 82292, 'disputed': 15, 'checked': 36534,
-         'reviewed': 3200, 'hidden': 21762, 'size': 5268376, 'duration': 2359}
-    """
+    """GET /projects/{id}/artifacts —— 返回最近一次打包结果的统计信息。"""
     url = f'{API_BASE}/projects/{project_id}/artifacts'
     data = api_request('GET', url, token)
     return json.loads(data.decode('utf-8'))
@@ -85,30 +70,50 @@ def print_artifact_info(info):
 
 
 def trigger_export(project_id, token):
-    """POST /projects/{id}/artifacts —— 手动触发重新打包，仅项目管理员可用，
-    普通成员调用会拿到 403。"""
+    """POST /projects/{id}/artifacts —— 仅项目管理员可用，普通成员会 403。"""
     url = f'{API_BASE}/projects/{project_id}/artifacts'
     api_request('POST', url, token)
 
 
-# def wait_for_fresh_export(project_id, token, baseline_created_at, timeout=300, interval=5):
-#     """这个接口没有明确的任务状态字段，只能靠 createdAt 是否变成比触发前更新的
-#     时间戳来间接判断打包是否完成。"""
-#     start = time.time()
-#     while time.time() - start < timeout:
-#         info = get_artifact_info(project_id, token)
-#         created = info.get('createdAt')
-#         if created and created != baseline_created_at:
-#             print(f'  检测到新的打包结果: {created}')
-#             return info
-#         time.sleep(interval)
-#     raise TimeoutError(f'等待新打包超过 {timeout} 秒仍未看到 createdAt 更新，'
-#                         f'可能打包时间比较长，可以稍后用不带 --trigger 的方式直接下载')
+def wait_for_fresh_export(project_id, token, baseline_created_at, timeout=300, interval=5):
+    """接口没有任务状态字段，靠 createdAt 是否变化间接判断打包完成。"""
+    start = time.time()
+    while time.time() - start < timeout:
+        info = get_artifact_info(project_id, token)
+        created = info.get('createdAt')
+        if created and created != baseline_created_at:
+            print(f'  检测到新的打包结果: {created}')
+            return info
+        time.sleep(interval)
+    raise TimeoutError(f'等待新打包超过 {timeout} 秒仍未看到 createdAt 更新')
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *args, **kwargs):
+        return None
 
 
 def download_artifact_zip(project_id, token, out_zip_path):
+    """下载接口返回 302 指向 OSS 签名 URL。手动跟随重定向，且不把 Authorization
+    带给 OSS（签名 URL 已自带认证，多余的头可能导致 400）。"""
     url = f'{API_BASE}/projects/{project_id}/artifacts/download'
-    data = api_request('GET', url, token, timeout=120)
+    opener = urllib.request.build_opener(_NoRedirect)
+    req = urllib.request.Request(url, headers={'Authorization': token})
+    try:
+        with opener.open(req, timeout=120) as resp:
+            data = resp.read()  # 非重定向（直接返回内容）的情况
+    except urllib.error.HTTPError as e:
+        if e.code not in (301, 302, 303, 307, 308):
+            raise
+        location = e.headers.get('Location')
+        if not location:
+            raise RuntimeError('下载接口返回重定向但没有 Location 头')
+        real_url = urljoin(SITE_BASE, location)
+        with urllib.request.urlopen(real_url, timeout=300) as resp:
+            data = resp.read()
+
+    if not data.startswith(b'PK'):
+        raise RuntimeError(f'下载结果不是 zip 文件（前 100 字节: {data[:100]!r}）')
     Path(out_zip_path).write_bytes(data)
 
 
@@ -141,7 +146,6 @@ def merge_zip(zip_path):
                 if not value:
                     continue
                 old = entries.get(key)
-                # 优先取有汉化的；汉化状态相同则取遍历顺序靠后的（覆盖）
                 if old is None or has_translation or not old.has_translation:
                     entries[key] = _Entry(value, has_translation)
     merged = {k: v.text for k, v in entries.items()}
@@ -162,10 +166,11 @@ def main():
     ap.add_argument('--project-id', type=int, default=PROJECT_ID)
     ap.add_argument('--token', default=None)
     ap.add_argument('--out', default='data/Merged.csv')
-    ap.add_argument('--timeout', type=int, default=300, help='等待远程打包完成的最长秒数')
-    ap.add_argument('--interval', type=int, default=3, help='轮询间隔秒数')
-    ap.add_argument('--from-zip', default=None, help='跳过触发导出，直接用本地已有的 zip 文件合并')
-    ap.add_argument('--keep-zip', default=None, help='顺便把下载的 zip 存一份到这个路径，方便排查问题')
+    ap.add_argument('--timeout', type=int, default=300, help='--trigger 时等待打包完成的最长秒数')
+    ap.add_argument('--interval', type=int, default=5, help='--trigger 时的轮询间隔秒数')
+    ap.add_argument('--trigger', action='store_true', help='管理员专用：先强制触发重新打包再下载')
+    ap.add_argument('--from-zip', default=None, help='跳过联网，直接用本地已有的 zip 合并')
+    ap.add_argument('--keep-zip', default=None, help='把下载的 zip 另存一份到该路径')
     args = ap.parse_args()
 
     if args.from_zip:
@@ -178,24 +183,34 @@ def main():
         if not project_id:
             sys.exit('请先配置 config 或 --project-id')
 
-        print('触发导出...')
+        info = {}
         try:
-            trigger_export(project_id, token)
+            info = get_artifact_info(project_id, token)
+            print('当前最新打包：')
+            print_artifact_info(info)
         except urllib.error.HTTPError as e:
-            sys.exit(f'触发导出失败: HTTP {e.code} {e.reason}\n{e.read().decode("utf-8", "ignore")}')
+            print(f'  查询打包信息失败 (HTTP {e.code})，继续尝试直接下载')
 
-        print('等待打包完成...')
-        # try:
-        #     wait_for_fresh_export(project_id, token, timeout=args.timeout, interval=args.interval)
-        # except (RuntimeError, TimeoutError) as e:
-        #     sys.exit(str(e))
+        if args.trigger:
+            print('触发导出（需要管理员权限）...')
+            try:
+                trigger_export(project_id, token)
+            except urllib.error.HTTPError as e:
+                sys.exit(f'触发导出失败: HTTP {e.code} {e.reason}\n'
+                         f'（403 说明不是项目管理员，去掉 --trigger 直接下载最新自动打包即可）')
+            print('等待打包完成...')
+            try:
+                wait_for_fresh_export(project_id, token, info.get('createdAt'),
+                                      timeout=args.timeout, interval=args.interval)
+            except TimeoutError as e:
+                sys.exit(str(e))
 
         zip_path = args.keep_zip or str(Path(tempfile.gettempdir()) / f'paratranz_{project_id}_artifacts.zip')
         print('下载打包文件...')
         try:
             download_artifact_zip(project_id, token, zip_path)
-        except urllib.error.HTTPError as e:
-            sys.exit(f'下载失败: HTTP {e.code} {e.reason}')
+        except (urllib.error.HTTPError, RuntimeError) as e:
+            sys.exit(f'下载失败: {e}')
 
     print('解压并合并...')
     merged, file_count = merge_zip(zip_path)
